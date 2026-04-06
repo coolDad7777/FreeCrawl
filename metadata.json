@@ -1,0 +1,5 @@
+{
+  "name": "FreeCrawl",
+  "description": "A self-hosted, free alternative to Firecrawl using Gemini and other free AI providers for web scraping and extraction.",
+  "requestFramePermissions": []
+}
