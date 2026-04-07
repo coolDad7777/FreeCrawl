@@ -16,7 +16,7 @@ A complete, self-hosted web scraping API that provides Firecrawl-equivalent func
 - **API**: Express.js (Node.js)
 - **Browser**: Playwright (Headless Chrome)
 - **Queue**: BullMQ + Redis
-- **AI**: Gemini 2.5 Flash, Groq (Llama 3), Ollama
+- **AI**: Gemini 2.5 Flash, Groq (Llama 3)
 - **Frontend**: React + Tailwind CSS + Framer Motion
 
 ## Getting Started

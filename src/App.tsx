@@ -159,7 +159,7 @@ export default function App() {
           <FeatureCard 
             icon={<Zap className="w-6 h-6 text-yellow-400" />}
             title="Free AI Providers"
-            description="Compatible with Gemini, Groq, and Ollama. Leverage the best free-tier models available."
+            description="Compatible with Gemini and Groq. Leverage the best free-tier models available."
           />
         </div>
 

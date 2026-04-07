@@ -14,7 +14,7 @@ export const ScrapeRequestSchema = z.object({
     schema: z.record(z.string(), z.string()).optional(),
     prompt: z.string().optional(),
   }).optional(),
-  ai_provider: z.enum(['gemini', 'groq', 'ollama']).default('gemini'),
+  ai_provider: z.enum(['gemini', 'groq']).default('gemini'),
 });
 
 export type ScrapeRequest = z.infer<typeof ScrapeRequestSchema>;
