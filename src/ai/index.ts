@@ -15,7 +15,7 @@ export class GeminiProvider implements AIProvider {
 
   async extractStructured(content: string, schema: any, prompt?: string): Promise<any> {
     const response = await this.ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-2.5-flash",
       contents: `Extract structured data from the following content based on the schema provided.
       
       Prompt: ${prompt || "Extract the relevant information."}
@@ -44,7 +44,7 @@ export class GeminiProvider implements AIProvider {
 
   async summarize(content: string): Promise<string> {
     const response = await this.ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-2.5-flash",
       contents: `Summarize the following content in a concise way:
       
       ${content.substring(0, 10000)}`,

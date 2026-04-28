@@ -106,9 +106,11 @@ async function processCrawl(jobId: string, request: CrawlRequest) {
     if (visited.has(current.url)) continue;
     visited.add(current.url);
 
+    const userFormats = request.scrape_options?.formats || ['markdown'];
+    const formatsWithHtml = userFormats.includes('html') ? userFormats : [...userFormats, 'html'];
     const scrapeResult = await scrapeUrl({
       url: current.url,
-      formats: request.scrape_options?.formats || ['markdown'],
+      formats: formatsWithHtml,
       ai_provider: request.scrape_options?.ai_provider || 'gemini',
       extract: request.scrape_options?.extract,
     });
