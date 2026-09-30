@@ -32,6 +32,7 @@ export interface ScrapeResponse {
       language: string;
       scrape_duration_ms: number;
       url: string;
+      status_code?: number;
     };
   };
   error?: string;
