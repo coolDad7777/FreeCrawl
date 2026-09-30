@@ -66,7 +66,7 @@ export const MapRequestSchema = z.object({
 export type MapRequest = z.infer<typeof MapRequestSchema>;
 
 export const SearchRequestSchema = z.object({
-  query: z.string(),
+  query: z.string().trim().min(1).max(500),
   limit: z.number().min(1).max(10).default(5),
   scrape_results: z.boolean().default(false),
 });

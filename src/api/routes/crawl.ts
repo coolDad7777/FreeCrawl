@@ -12,7 +12,8 @@ router.post('/', async (req: Request, res: Response) => {
     const jobId = await createCrawlJob(validated);
     res.json({ success: true, job_id: jobId });
   } catch (error: any) {
-    res.status(400).json({ success: false, error: error.message });
+    const status = error?.name === 'ZodError' ? 400 : 422;
+    res.status(status).json({ success: false, error: error.message });
   }
 });
 

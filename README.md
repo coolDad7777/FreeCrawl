@@ -44,6 +44,25 @@ A complete, self-hosted web scraping API that provides Firecrawl-equivalent func
    npm run dev
    ```
 
+## API overview
+
+All endpoints return `{ "success": boolean, ... }`. Invalid request bodies return
+`400`; unsafe or unreachable target URLs return `422`.
+
+- `POST /v1/scrape` — scrape a URL as Markdown, HTML, or a screenshot.
+- `POST /v1/crawl` — enqueue a bounded recursive crawl and return its `job_id`.
+- `GET /v1/crawl/:jobId` — read crawl progress and results.
+- `DELETE /v1/crawl/:jobId` — cancel an active crawl.
+- `POST /v1/map` — list same-host links, up to the requested limit.
+- `POST /v1/search` — search DuckDuckGo and optionally scrape results.
+- `GET /health` — liveness check.
+
+Target URLs are restricted to public HTTP(S) hosts. Private IP ranges, localhost,
+URL credentials, unsupported schemes, oversized pages, and excessively large
+requests are rejected by the API.
+
+An OpenAPI 3 description is available at [`openapi.yaml`](./openapi.yaml).
+
 ## API Usage
 
 ### Scrape a URL

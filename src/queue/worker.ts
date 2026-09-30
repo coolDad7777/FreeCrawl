@@ -24,7 +24,7 @@ const redisConnection = new IORedis(redisUrl, {
 // Handle connection errors to prevent process crash
 redisConnection.on('error', (err) => {
   // We don't log the full error to keep the console clean if Redis is missing
-  if (err.code === 'ECONNREFUSED') {
+  if ((err as NodeJS.ErrnoException).code === 'ECONNREFUSED') {
     // Silently handle connection refused
   } else {
     console.error('Redis error:', err.message);
@@ -101,24 +101,26 @@ export function cancelCrawlJob(jobId: string): boolean {
 async function processCrawl(jobId: string, request: CrawlRequest) {
   const job = jobsStore.get(jobId);
   if (!job) return;
+  const results: ScrapeResponse[] = [];
 
   try {
     job.status = 'running';
     await assertSafeUrl(request.url);
     const visited = new Set<string>();
     const queue = [{ url: normalizeUrl(request.url), depth: 0 }];
-    const results: ScrapeResponse[] = [];
 
     const baseUrl = new URL(request.url);
 
     while (queue.length > 0 && results.length < request.limit) {
-    if (job.status === 'cancelled') return;
+    if (jobsStore.get(jobId)?.status === 'cancelled') return;
     const current = queue.shift()!;
     if (visited.has(current.url)) continue;
     visited.add(current.url);
 
     const userFormats = request.scrape_options?.formats || ['markdown'];
-    const formatsWithHtml = userFormats.includes('html') ? userFormats : [...userFormats, 'html'];
+    const formatsWithHtml = userFormats.includes('html')
+      ? userFormats
+      : [...userFormats, 'html' as const];
     const scrapeResult = await scrapeUrl({
       url: current.url,
       formats: formatsWithHtml,
