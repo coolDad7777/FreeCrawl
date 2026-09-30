@@ -11,7 +11,7 @@ router.post('/', async (req: Request, res: Response) => {
     
     // Using DuckDuckGo HTML search as a free alternative
     const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-    const response = await axios.get(searchUrl);
+    const response = await axios.get(searchUrl, { timeout: 15000, maxContentLength: 5 * 1024 * 1024 });
     const results: any[] = [];
     
     // Simple parsing (could be improved with cheerio)
@@ -38,7 +38,8 @@ router.post('/', async (req: Request, res: Response) => {
 
     res.json({ success: true, data: results });
   } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message });
+    const status = error?.name === 'ZodError' ? 400 : 502;
+    res.status(status).json({ success: false, error: error.message });
   }
 });
 

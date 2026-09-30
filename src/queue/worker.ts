@@ -5,6 +5,7 @@ import { CrawlRequest, CrawlJob, ScrapeResponse } from '../types';
 import { scrapeUrl } from '../core/scraper';
 import * as cheerio from 'cheerio';
 import axios from 'axios';
+import { assertSafeUrl, isAllowedLink, normalizeUrl } from '../core/url';
 
 const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
 const redisConnection = new IORedis(redisUrl, {
@@ -23,7 +24,7 @@ const redisConnection = new IORedis(redisUrl, {
 // Handle connection errors to prevent process crash
 redisConnection.on('error', (err) => {
   // We don't log the full error to keep the console clean if Redis is missing
-  if (err.code === 'ECONNREFUSED') {
+  if ((err as NodeJS.ErrnoException).code === 'ECONNREFUSED') {
     // Silently handle connection refused
   } else {
     console.error('Redis error:', err.message);
@@ -90,24 +91,36 @@ export function getCrawlJob(jobId: string): CrawlJob | undefined {
   return jobsStore.get(jobId);
 }
 
+export function cancelCrawlJob(jobId: string): boolean {
+  const job = jobsStore.get(jobId);
+  if (!job || ['completed', 'failed', 'cancelled'].includes(job.status)) return false;
+  job.status = 'cancelled';
+  return true;
+}
+
 async function processCrawl(jobId: string, request: CrawlRequest) {
   const job = jobsStore.get(jobId);
   if (!job) return;
-
-  job.status = 'running';
-  const visited = new Set<string>();
-  const queue = [{ url: request.url, depth: 0 }];
   const results: ScrapeResponse[] = [];
 
-  const baseUrl = new URL(request.url);
+  try {
+    job.status = 'running';
+    await assertSafeUrl(request.url);
+    const visited = new Set<string>();
+    const queue = [{ url: normalizeUrl(request.url), depth: 0 }];
 
-  while (queue.length > 0 && results.length < (request.limit || 10)) {
+    const baseUrl = new URL(request.url);
+
+    while (queue.length > 0 && results.length < request.limit) {
+    if (jobsStore.get(jobId)?.status === 'cancelled') return;
     const current = queue.shift()!;
     if (visited.has(current.url)) continue;
     visited.add(current.url);
 
     const userFormats = request.scrape_options?.formats || ['markdown'];
-    const formatsWithHtml = userFormats.includes('html') ? userFormats : [...userFormats, 'html'];
+    const formatsWithHtml = userFormats.includes('html')
+      ? userFormats
+      : [...userFormats, 'html' as const];
     const scrapeResult = await scrapeUrl({
       url: current.url,
       formats: formatsWithHtml,
@@ -121,29 +134,29 @@ async function processCrawl(jobId: string, request: CrawlRequest) {
       job.progress = Math.round((results.length / (request.limit || 10)) * 100);
       
       // Extract links for next depth
-      if (current.depth < (request.max_depth || 2)) {
+      if (current.depth < request.max_depth) {
         const $ = cheerio.load(scrapeResult.data.html || '');
         $('a').each((_, el) => {
           const href = $(el).attr('href');
           if (href) {
             try {
-              const absoluteUrl = new URL(href, current.url).toString();
-              const parsedAbsolute = new URL(absoluteUrl);
-              
-              const isSameDomain = parsedAbsolute.hostname === baseUrl.hostname;
-              if (isSameDomain || request.allow_external) {
-                if (!visited.has(absoluteUrl)) {
-                  queue.push({ url: absoluteUrl, depth: current.depth + 1 });
-                }
+              const absoluteUrl = normalizeUrl(new URL(href, current.url).toString());
+              if (isAllowedLink(absoluteUrl, baseUrl, request.allow_external) && !visited.has(absoluteUrl)) {
+                queue.push({ url: absoluteUrl, depth: current.depth + 1 });
               }
-            } catch (e) {}
+            } catch {}
           }
         });
       }
     }
-  }
+    }
 
-  job.status = 'completed';
-  job.progress = 100;
-  job.total_pages = results.length;
+    job.status = 'completed';
+    job.progress = 100;
+    job.total_pages = results.length;
+  } catch (error: any) {
+    job.status = 'failed';
+    job.error = error.message;
+    job.total_pages = results.length;
+  }
 }

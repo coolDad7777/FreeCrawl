@@ -12,7 +12,7 @@ export async function scrapeUrl(options: ScrapeRequest): Promise<ScrapeResponse>
     page = await browserManager.newPage();
     
     // Set a timeout for navigation
-    await page.goto(options.url, { waitUntil: 'networkidle', timeout: 30000 });
+    const response = await page.goto(options.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
     // Execute actions
     if (options.actions) {
@@ -40,6 +40,9 @@ export async function scrapeUrl(options: ScrapeRequest): Promise<ScrapeResponse>
 
     const title = await page.title();
     const html = await page.content();
+    if (html.length > 10 * 1024 * 1024) {
+      throw new Error('Page content exceeds the 10 MB limit');
+    }
     const markdown = options.formats.includes('markdown') ? htmlToMarkdown(html) : undefined;
     const screenshot = options.formats.includes('screenshot') ? 
       (await page.screenshot({ fullPage: true })).toString('base64') : undefined;
@@ -50,6 +53,7 @@ export async function scrapeUrl(options: ScrapeRequest): Promise<ScrapeResponse>
       language: await page.locator('html').getAttribute('lang').catch(() => 'en'),
       scrape_duration_ms: Date.now() - startTime,
       url: options.url,
+      status_code: response?.status(),
     };
 
     let extractData = undefined;

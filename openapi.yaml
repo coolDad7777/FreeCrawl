@@ -1,0 +1,87 @@
+openapi: 3.0.3
+info:
+  title: FreeCrawl API
+  version: 1.0.0
+  description: Self-hosted web scraping, crawling, mapping, and search API.
+servers:
+  - url: http://localhost:3000
+paths:
+  /health:
+    get:
+      responses:
+        '200':
+          description: Service is available
+  /v1/scrape:
+    post:
+      summary: Scrape one public URL
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScrapeRequest'
+      responses:
+        '200': { description: Scrape result }
+        '400': { description: Invalid request }
+        '422': { description: Unsafe or unreachable URL }
+  /v1/crawl:
+    post:
+      summary: Start a bounded crawl
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CrawlRequest'
+      responses:
+        '200': { description: Job accepted }
+  /v1/crawl/{jobId}:
+    get:
+      summary: Get crawl status
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200': { description: Crawl job }
+        '404': { description: Job not found }
+    delete:
+      summary: Cancel a crawl
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200': { description: Crawl cancelled }
+        '404': { description: Active job not found }
+  /v1/map:
+    post:
+      summary: Map same-host links
+      responses:
+        '200': { description: URL list }
+  /v1/search:
+    post:
+      summary: Search the web
+      responses:
+        '200': { description: Search results }
+components:
+  parameters:
+    JobId:
+      name: jobId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  schemas:
+    ScrapeRequest:
+      type: object
+      required: [url]
+      properties:
+        url: { type: string, format: uri }
+        formats:
+          type: array
+          items: { type: string, enum: [markdown, html, screenshot] }
+        extract: { type: object }
+    CrawlRequest:
+      type: object
+      required: [url]
+      properties:
+        url: { type: string, format: uri }
+        max_depth: { type: integer, minimum: 1, maximum: 5, default: 2 }
+        limit: { type: integer, minimum: 1, maximum: 100, default: 10 }
+        allow_external: { type: boolean, default: false }
