@@ -28,8 +28,11 @@ function patternToRegExp(pattern: string): RegExp {
   const mustEnd = normalized.endsWith('$');
   if (mustEnd) normalized = normalized.slice(0, -1);
 
+  // In robots.txt only `*` and a trailing `$` are special. Everything else is
+  // literal — notably `?`, which regex would otherwise read as a quantifier and
+  // make `Disallow: /r?` match `/`, blocking the whole site.
   const escaped = normalized
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
     .replace(/\*/g, '.*');
 
   return new RegExp(`^${escaped}${mustEnd ? '$' : ''}`);

@@ -61,6 +61,26 @@ describe('isPathAllowed', () => {
     expect(isPathAllowed(robots, '/search?q=x')).toBe(false);
   });
 
+  it('treats "?" in a rule as a literal, not a regex quantifier', () => {
+    // Hacker News ships rules like `Disallow: /r?`. Read as regex, `/r?` matches
+    // "/" and silently blocks the entire site.
+    const robots = parseRobotsTxt(
+      ['User-agent: *', 'Disallow: /r?', 'Disallow: /x?', 'Disallow: /login'].join('\n'),
+    );
+    expect(isPathAllowed(robots, '/')).toBe(true);
+    expect(isPathAllowed(robots, '/item?id=1')).toBe(true);
+    expect(isPathAllowed(robots, '/r?fnid=abc')).toBe(false);
+    expect(isPathAllowed(robots, '/login')).toBe(false);
+  });
+
+  it('treats other regex metacharacters as literals', () => {
+    const robots = parseRobotsTxt(['User-agent: *', 'Disallow: /a+b', 'Disallow: /c(d)'].join('\n'));
+    expect(isPathAllowed(robots, '/aab')).toBe(true);
+    expect(isPathAllowed(robots, '/a+b')).toBe(false);
+    expect(isPathAllowed(robots, '/cd')).toBe(true);
+    expect(isPathAllowed(robots, '/c(d)')).toBe(false);
+  });
+
   it('allows everything when robots.txt is absent', () => {
     expect(isPathAllowed({ rules: [], crawlDelayMs: 0, sitemaps: [], absent: true }, '/any')).toBe(true);
   });

@@ -435,4 +435,14 @@ describe('unknown routes', () => {
     const response = await request(app).post('/v1/nope').expect(404);
     expect(response.body.code).toBe('not_found');
   });
+
+  it('is not shadowed by the SPA middleware mounted after the API', async () => {
+    const withFrontend = createApp({ logging: false });
+    // Stands in for the Vite/static handler, which answers anything it is given.
+    withFrontend.use((_req, res) => res.status(404).end());
+    attachErrorHandlers(withFrontend);
+
+    const response = await request(withFrontend).post('/v1/nope').expect(404);
+    expect(response.body.code).toBe('not_found');
+  });
 });

@@ -98,6 +98,53 @@ describe('extractPage', () => {
   });
 });
 
+describe('extractPage with chrome nested inside the content container', () => {
+  // Wikipedia's layout: <main> wraps both a site header holding the <h1> and a
+  // language menu, and the article body. The header must go, the heading must not.
+  const NESTED = `<!doctype html><html><head><title>Nested Chrome</title></head><body>
+    <main id="content">
+      <header class="page-titlebar">
+        <h1>The Real Title</h1>
+        <div class="language-menu"><span>22 languages</span><a href="/fr">Francais</a></div>
+        <label>Toggle the table of contents</label>
+      </header>
+      <div class="body-content">
+        <p>The article body carries the substance of the page, with enough prose, commas, and
+        clauses that the extractor has no trouble recognising it as the primary content rather
+        than as part of the surrounding furniture.</p>
+        <p>A second paragraph makes the density heuristics even more confident about where the
+        real content of this particular document actually begins and ends.</p>
+      </div>
+      <footer class="page-footer">Retrieved from a URL. Categories: things.</footer>
+    </main>
+  </body></html>`;
+
+  const result = extractPage(NESTED, { url: 'https://example.com/page' });
+
+  it('removes the nested header, language menu, and footer', () => {
+    expect(result.text).not.toContain('22 languages');
+    expect(result.text).not.toContain('Toggle the table of contents');
+    expect(result.text).not.toContain('Retrieved from');
+  });
+
+  it('keeps the article body', () => {
+    expect(result.text).toContain('The article body carries the substance');
+  });
+
+  it('restores the heading that lived in the removed chrome', () => {
+    expect(result.html).toContain('<h1>The Real Title</h1>');
+    expect(htmlToMarkdown(result.html)).toContain('# The Real Title');
+  });
+
+  it('never removes an element that contains the chosen content', () => {
+    const wrapped = extractPage(
+      `<html><body><header><main><article><p>${'Real content with commas, clauses, and enough length to be selected as the main body of this document. '.repeat(3)}</p></article></main></header></body></html>`,
+      { url: 'https://example.com/x' },
+    );
+    expect(wrapped.text).toContain('Real content with commas');
+  });
+});
+
 describe('htmlToMarkdown', () => {
   const markdown = htmlToMarkdown(extractPage(PAGE, { url: 'https://example.com/pricing' }).html);
 

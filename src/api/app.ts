@@ -75,6 +75,9 @@ export function createApp(options: AppOptions = {}): Express {
   v1.use('/map', mapRouter);
   v1.use('/search', searchRouter);
   v1.use('/extract', extractRouter);
+  // Registered here, not in attachErrorHandlers: the Vite/static middleware that
+  // follows would otherwise answer unknown /v1 paths with an empty 404.
+  v1.use(notFoundHandler);
   app.use('/v1', v1);
 
   return app;
@@ -101,6 +104,5 @@ export async function attachFrontend(app: Express): Promise<void> {
 }
 
 export function attachErrorHandlers(app: Express): void {
-  app.use('/v1', notFoundHandler);
   app.use(errorHandler);
 }

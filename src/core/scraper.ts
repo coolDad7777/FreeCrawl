@@ -308,7 +308,8 @@ export async function scrapeDocument(
 
   document.metadata.scrapeDurationMs = Date.now() - startedAt;
 
-  if (!options.skipCache && page.statusCode !== undefined && page.statusCode < 400) {
+  // `skipCache` only bypasses reads; a fresh result is still worth storing.
+  if (page.statusCode !== undefined && page.statusCode < 400) {
     scrapeCache.set(key, url, document);
   }
 

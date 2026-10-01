@@ -258,6 +258,10 @@ export function extractPage(rawHtml: string, options: ExtractOptions): Extracted
     $('img[src^="data:"]').remove();
   }
 
+  // Many sites place the <h1> in page chrome rather than inside the article, so
+  // keep it before anything is removed and restore it below if it is lost.
+  const documentHeading = $('h1').first().text().replace(/\s+/g, ' ').trim();
+
   let root: Cheerio<AnyNode> = $('body').length > 0 ? $('body') : $.root();
 
   if (options.includeTags && options.includeTags.length > 0) {
@@ -276,9 +280,16 @@ export function extractPage(rawHtml: string, options: ExtractOptions): Extracted
     const noise = $(BOILERPLATE_SELECTORS.join(', '));
     const main = selectMainContent($);
     if (main && main.length > 0) {
-      // Only drop chrome that lives outside the chosen article.
+      const mainTextLength = Math.max(textOf($, main[0]).length, 1);
       noise.each((_, element) => {
-        if (main.find(element as never).length === 0 && !main.is(element as never)) $(element).remove();
+        const node = $(element);
+        // Never remove the chosen article or anything that contains it.
+        if (node.is(main as never) || node.find(main.toArray() as never).length > 0) return;
+        // Chrome often nests *inside* the content container (a site header that
+        // wraps both the title and a language menu, say). Remove it too, but only
+        // when it is small enough that it cannot be the content itself.
+        const inside = main.find(element as never).length > 0;
+        if (!inside || textOf($, element).length / mainTextLength < 0.3) node.remove();
       });
       root = main;
     } else {
@@ -289,8 +300,12 @@ export function extractPage(rawHtml: string, options: ExtractOptions): Extracted
     }
   }
 
-  const html = (root.html() ?? '').trim();
-  const text = root.text().replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+  let html = (root.html() ?? '').trim();
+  if (documentHeading && !/<h1[\s>]/i.test(html)) {
+    html = `<h1>${documentHeading.replace(/</g, '&lt;')}</h1>\n${html}`;
+  }
+
+  const text = cheerio.load(html).root().text().replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
 
   return { html, text, links, metadata };
 }
