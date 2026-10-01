@@ -3,6 +3,10 @@ import net from 'node:net';
 
 const blockedHostnames = new Set(['localhost', 'localhost.localdomain']);
 
+function allowPrivateTargets(): boolean {
+  return process.env.FREECRAWL_ALLOW_PRIVATE_HOSTS === 'true';
+}
+
 function isPrivateIp(address: string): boolean {
   if (net.isIPv4(address)) {
     const [a, b] = address.split('.').map(Number);
@@ -39,6 +43,10 @@ export async function assertSafeUrl(value: string): Promise<string> {
     throw new Error('Only public HTTP(S) URLs without credentials are allowed');
   }
 
+  if (allowPrivateTargets()) {
+    return normalizeUrl(value);
+  }
+
   const hostname = parsed.hostname.toLowerCase().replace(/\.$/, '');
   if (blockedHostnames.has(hostname) || isPrivateIp(hostname)) {
     throw new Error('Private and local URLs are not allowed');
@@ -57,6 +65,7 @@ export function isAllowedLink(value: string, base: URL, allowExternal: boolean):
     const parsed = new URL(value);
     if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) return false;
     if (!allowExternal && parsed.hostname !== base.hostname) return false;
+    if (allowPrivateTargets()) return true;
     return !blockedHostnames.has(parsed.hostname.toLowerCase()) && !isPrivateIp(parsed.hostname);
   } catch {
     return false;

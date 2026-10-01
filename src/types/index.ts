@@ -14,7 +14,7 @@ export const ScrapeRequestSchema = z.object({
     schema: z.record(z.string(), z.string()).optional(),
     prompt: z.string().optional(),
   }).optional(),
-  ai_provider: z.enum(['gemini', 'groq']).default('gemini'),
+  ai_provider: z.enum(['local', 'gemini', 'groq']).default('local'),
 });
 
 export type ScrapeRequest = z.infer<typeof ScrapeRequestSchema>;
@@ -40,7 +40,7 @@ export interface ScrapeResponse {
 
 export const CrawlRequestSchema = z.object({
   url: z.string().url(),
-  max_depth: z.number().min(1).max(5).default(2),
+  max_depth: z.number().min(0).max(5).default(2),
   limit: z.number().min(1).max(100).default(10),
   allow_external: z.boolean().default(false),
   scrape_options: ScrapeRequestSchema.omit({ url: true }).optional(),
@@ -72,3 +72,12 @@ export const SearchRequestSchema = z.object({
 });
 
 export type SearchRequest = z.infer<typeof SearchRequestSchema>;
+
+export const ExtractRequestSchema = z.object({
+  urls: z.array(z.string().url()).min(1).max(10),
+  prompt: z.string().max(2000).optional(),
+  schema: z.record(z.string(), z.string()).default({ summary: 'A concise summary of the page' }),
+  ai_provider: z.enum(['local', 'gemini', 'groq']).default('local'),
+});
+
+export type ExtractRequest = z.infer<typeof ExtractRequestSchema>;

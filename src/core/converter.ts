@@ -6,11 +6,11 @@ const turndownService = new TurndownService({
 });
 
 // Remove script and style tags
-turndownService.addRule('remove-scripts', {
-  filter: ['script', 'style', 'noscript', 'iframe'],
+turndownService.addRule('remove-noisy-elements', {
+  filter: ['script', 'style', 'noscript', 'iframe', 'svg', 'canvas'],
   replacement: () => '',
 });
 
 export function htmlToMarkdown(html: string): string {
-  return turndownService.turndown(html);
+  return turndownService.turndown(html).replace(/\n{3,}/g, '\n\n').trim();
 }

@@ -1,24 +1,18 @@
 import express, { Request, Response } from 'express';
-import axios from 'axios';
 import * as cheerio from 'cheerio';
 import { MapRequestSchema } from '../../types';
-import { assertSafeUrl, isAllowedLink, normalizeUrl } from '../../core/url';
+import { isAllowedLink, normalizeUrl } from '../../core/url';
+import { fetchText } from '../../core/fetcher';
 
 const router = express.Router();
 
 router.post('/', async (req: Request, res: Response) => {
   try {
     const { url: requestedUrl, limit } = MapRequestSchema.parse(req.body);
-    const url = await assertSafeUrl(requestedUrl);
+    const fetched = await fetchText(requestedUrl);
+    const url = fetched.url;
     
-    // Simple implementation: fetch page and extract all unique internal links
-    const response = await axios.get(url, {
-      headers: { 'User-Agent': 'FreeCrawl/1.0' },
-      timeout: 30000,
-      maxContentLength: 10 * 1024 * 1024,
-      maxBodyLength: 10 * 1024 * 1024,
-    });
-    const $ = cheerio.load(response.data);
+    const $ = cheerio.load(fetched.body);
     const baseUrl = new URL(url);
     const links = new Set<string>();
 

@@ -1,13 +1,13 @@
 # FreeCrawl
 
-A complete, self-hosted web scraping API that provides Firecrawl-equivalent functionality using only free AI providers.
+A complete, self-hosted web scraping API that provides Firecrawl-style functionality with a no-key local extraction fallback and optional free-tier AI providers.
 
 ## Features
 
 - **Scrape**: Single URL to markdown, HTML, or screenshot.
 - **Crawl**: Recursive site crawling with depth control.
 - **Map**: Discover all internal URLs on a site.
-- **Extract**: AI-powered structured data extraction using Gemini 2.5 Flash.
+- **Extract**: Structured data extraction using the local fallback, Gemini, or Groq.
 - **Search**: Web search integration via DuckDuckGo.
 - **Self-Hosted**: Run on your own infrastructure with total privacy.
 
@@ -16,7 +16,7 @@ A complete, self-hosted web scraping API that provides Firecrawl-equivalent func
 - **API**: Express.js (Node.js)
 - **Browser**: Playwright (Headless Chrome)
 - **Queue**: BullMQ + Redis
-- **AI**: Gemini 2.5 Flash, Groq (Llama 3)
+- **Extraction**: Local heuristic fallback, Gemini 2.5 Flash, Groq (Llama 3)
 - **Frontend**: React + Tailwind CSS + Framer Motion
 
 ## Getting Started
@@ -24,8 +24,8 @@ A complete, self-hosted web scraping API that provides Firecrawl-equivalent func
 ### Prerequisites
 
 - Node.js 18+
-- Redis (for crawl jobs)
-- Gemini API Key (from Google AI Studio)
+- Redis (optional, for durable crawl queues; the app falls back to in-memory jobs)
+- Gemini or Groq API key (optional, only needed when using those providers)
 
 ### Installation
 
@@ -36,8 +36,10 @@ A complete, self-hosted web scraping API that provides Firecrawl-equivalent func
    ```
 3. Set up environment variables in `.env`:
    ```env
-   GEMINI_API_KEY=your_key_here
+   PORT=3000
    REDIS_URL=redis://localhost:6379
+   GEMINI_API_KEY=your_optional_key_here
+   GROQ_API_KEY=your_optional_key_here
    ```
 4. Start the server:
    ```bash
@@ -55,11 +57,13 @@ All endpoints return `{ "success": boolean, ... }`. Invalid request bodies retur
 - `DELETE /v1/crawl/:jobId` — cancel an active crawl.
 - `POST /v1/map` — list same-host links, up to the requested limit.
 - `POST /v1/search` — search DuckDuckGo and optionally scrape results.
+- `POST /v1/extract` — scrape one or more URLs and return structured JSON.
 - `GET /health` — liveness check.
 
 Target URLs are restricted to public HTTP(S) hosts. Private IP ranges, localhost,
 URL credentials, unsupported schemes, oversized pages, and excessively large
-requests are rejected by the API.
+requests are rejected by the API. For local development and tests, set
+`FREECRAWL_ALLOW_PRIVATE_HOSTS=true` to allow private hosts.
 
 An OpenAPI 3 description is available at [`openapi.yaml`](./openapi.yaml).
 
@@ -73,7 +77,22 @@ curl -X POST http://localhost:3000/v1/scrape \
   -d '{
     "url": "https://example.com",
     "formats": ["markdown"],
-    "ai_provider": "gemini"
+    "ai_provider": "local"
+  }'
+```
+
+### Extract structured data
+
+```bash
+curl -X POST http://localhost:3000/v1/extract \
+  -H "Content-Type: application/json" \
+  -d '{
+    "urls": ["https://example.com"],
+    "schema": {
+      "title": "Page title",
+      "summary": "Short summary"
+    },
+    "ai_provider": "local"
   }'
 ```
 

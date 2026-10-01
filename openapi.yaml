@@ -60,6 +60,19 @@ paths:
       summary: Search the web
       responses:
         '200': { description: Search results }
+  /v1/extract:
+    post:
+      summary: Extract structured data from one or more public URLs
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExtractRequest'
+      responses:
+        '200': { description: Structured extraction results }
+        '400': { description: Invalid request }
+        '422': { description: Unsafe or unreachable URL }
 components:
   parameters:
     JobId:
@@ -77,11 +90,32 @@ components:
           type: array
           items: { type: string, enum: [markdown, html, screenshot] }
         extract: { type: object }
+        ai_provider:
+          type: string
+          enum: [local, gemini, groq]
+          default: local
     CrawlRequest:
       type: object
       required: [url]
       properties:
         url: { type: string, format: uri }
-        max_depth: { type: integer, minimum: 1, maximum: 5, default: 2 }
+        max_depth: { type: integer, minimum: 0, maximum: 5, default: 2 }
         limit: { type: integer, minimum: 1, maximum: 100, default: 10 }
         allow_external: { type: boolean, default: false }
+    ExtractRequest:
+      type: object
+      required: [urls]
+      properties:
+        urls:
+          type: array
+          minItems: 1
+          maxItems: 10
+          items: { type: string, format: uri }
+        prompt: { type: string }
+        schema:
+          type: object
+          additionalProperties: { type: string }
+        ai_provider:
+          type: string
+          enum: [local, gemini, groq]
+          default: local

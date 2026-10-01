@@ -1,14 +1,67 @@
 import { Page } from 'playwright';
+import * as cheerio from 'cheerio';
 import { browserManager } from './browser';
 import { htmlToMarkdown } from './converter';
+import { fetchText } from './fetcher';
 import { ScrapeRequest, ScrapeResponse } from '../types';
 import { getAIProvider } from '../ai';
+
+function pickMetadata(html: string, url: string, statusCode?: number, startedAt = Date.now()) {
+  const $ = cheerio.load(html);
+  return {
+    title: $('title').first().text().trim(),
+    description: $('meta[name="description"]').attr('content') || $('meta[property="og:description"]').attr('content') || '',
+    language: $('html').attr('lang') || 'en',
+    scrape_duration_ms: Date.now() - startedAt,
+    url,
+    status_code: statusCode,
+  };
+}
+
+async function scrapeStatic(options: ScrapeRequest, startedAt: number): Promise<ScrapeResponse> {
+  const fetched = await fetchText(options.url);
+  const html = fetched.body;
+  if (html.length > 10 * 1024 * 1024) {
+    throw new Error('Page content exceeds the 10 MB limit');
+  }
+
+  const markdown = options.formats.includes('markdown') || options.extract ? htmlToMarkdown(html) : undefined;
+  const metadata = pickMetadata(html, fetched.url, fetched.statusCode, startedAt);
+
+  let extractData = undefined;
+  if (options.extract) {
+    const ai = getAIProvider(options.ai_provider);
+    extractData = await ai.extractStructured(
+      markdown || html.substring(0, 20000),
+      options.extract.schema || { summary: 'A brief summary of the page' },
+      options.extract.prompt,
+    );
+  }
+
+  return {
+    success: true,
+    data: {
+      markdown,
+      html: options.formats.includes('html') ? html : undefined,
+      extract: extractData,
+      metadata,
+    },
+  };
+}
+
+function needsBrowser(options: ScrapeRequest): boolean {
+  return options.formats.includes('screenshot') || Boolean(options.actions?.length);
+}
 
 export async function scrapeUrl(options: ScrapeRequest): Promise<ScrapeResponse> {
   const startTime = Date.now();
   let page: Page | null = null;
 
   try {
+    if (!needsBrowser(options)) {
+      return await scrapeStatic(options, startTime);
+    }
+
     page = await browserManager.newPage();
     
     // Set a timeout for navigation
@@ -47,14 +100,8 @@ export async function scrapeUrl(options: ScrapeRequest): Promise<ScrapeResponse>
     const screenshot = options.formats.includes('screenshot') ? 
       (await page.screenshot({ fullPage: true })).toString('base64') : undefined;
 
-    const metadata = {
-      title,
-      description: await page.locator('meta[name="description"]').getAttribute('content').catch(() => ''),
-      language: await page.locator('html').getAttribute('lang').catch(() => 'en'),
-      scrape_duration_ms: Date.now() - startTime,
-      url: options.url,
-      status_code: response?.status(),
-    };
+    const metadata = pickMetadata(html, page.url(), response?.status(), startTime);
+    metadata.title = title || metadata.title;
 
     let extractData = undefined;
     if (options.extract) {
@@ -86,6 +133,6 @@ export async function scrapeUrl(options: ScrapeRequest): Promise<ScrapeResponse>
       data: null as any
     };
   } finally {
-    if (page) await page.close();
+    if (page) await page.context().close();
   }
 }
