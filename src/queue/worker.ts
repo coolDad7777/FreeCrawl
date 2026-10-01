@@ -1,162 +1,155 @@
-import { Queue, Worker, Job } from 'bullmq';
+import { randomUUID } from 'node:crypto';
+import { Queue, Worker, type Job } from 'bullmq';
 import IORedis from 'ioredis';
-import { v4 as uuidv4 } from 'uuid';
-import { CrawlRequest, CrawlJob, ScrapeResponse } from '../types';
-import { scrapeUrl } from '../core/scraper';
-import * as cheerio from 'cheerio';
-import axios from 'axios';
-import { assertSafeUrl, isAllowedLink, normalizeUrl } from '../core/url';
+import { config } from '../config';
+import type { BatchScrapeRequest, CrawlRequest, Document, JobRecord } from '../types';
+import { toErrorMessage } from '../core/errors';
+import { runBatchScrape, runCrawl } from './crawler';
+import { jobStore } from './store';
 
-const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
-const redisConnection = new IORedis(redisUrl, {
-  maxRetriesPerRequest: null,
-  lazyConnect: true, // Don't connect immediately
-  retryStrategy: (times) => {
-    // Only retry 3 times, then stop
-    if (times > 3) {
-      console.warn(`Redis connection failed after ${times} retries. Falling back to in-memory processing.`);
-      return null;
-    }
-    return Math.min(times * 100, 2000);
-  }
-});
+const QUEUE_NAME = 'freecrawl-jobs';
 
-// Handle connection errors to prevent process crash
-redisConnection.on('error', (err) => {
-  // We don't log the full error to keep the console clean if Redis is missing
-  if ((err as NodeJS.ErrnoException).code === 'ECONNREFUSED') {
-    // Silently handle connection refused
+type JobPayload =
+  | { kind: 'crawl'; jobId: string; request: CrawlRequest }
+  | { kind: 'batch_scrape'; jobId: string; request: BatchScrapeRequest };
+
+let queue: Queue<JobPayload> | null = null;
+let worker: Worker<JobPayload> | null = null;
+let connection: IORedis | null = null;
+let backend: 'redis' | 'in-process' = 'in-process';
+
+async function execute(payload: JobPayload): Promise<void> {
+  if (payload.kind === 'crawl') {
+    await runCrawl(payload.jobId, payload.request);
   } else {
-    console.error('Redis error:', err.message);
-  }
-});
-
-let crawlQueue: Queue | null = null;
-let isRedisAvailable = false;
-
-async function initQueue() {
-  try {
-    await redisConnection.connect();
-    isRedisAvailable = true;
-    crawlQueue = new Queue('crawl-queue', { connection: redisConnection });
-    
-    new Worker('crawl-queue', async (job: Job) => {
-      const { jobId, request } = job.data;
-      await processCrawl(jobId, request);
-    }, { connection: redisConnection });
-    
-    console.log('Redis connected successfully. BullMQ queue initialized.');
-  } catch (e) {
-    isRedisAvailable = false;
-    console.warn("Redis not available. Using in-memory fallback for crawl jobs.");
+    await runBatchScrape(payload.jobId, payload.request);
   }
 }
 
-// Start connection attempt
-initQueue().catch(() => {
-  isRedisAvailable = false;
-});
-
-const jobsStore = new Map<string, CrawlJob>();
-
-export async function createCrawlJob(request: CrawlRequest): Promise<string> {
-  const jobId = uuidv4();
-  const job: CrawlJob = {
-    id: jobId,
-    status: 'pending',
-    progress: 0,
-    results: [],
-    total_pages: 0,
-    created_at: new Date().toISOString(),
-  };
-  
-  jobsStore.set(jobId, job);
-
-  if (isRedisAvailable && crawlQueue) {
-    try {
-      await crawlQueue.add('crawl-task', { jobId, request });
-    } catch (e) {
-      console.error("Failed to add job to BullMQ, falling back to in-memory:", e);
-      processCrawl(jobId, request).catch(console.error);
-    }
-  } else {
-    // Fallback: run in background without queue
-    processCrawl(jobId, request).catch(console.error);
+/**
+ * Uses BullMQ when Redis is reachable so jobs survive process restarts and can
+ * be spread over several workers. Falls back to running jobs in this process,
+ * which keeps a single-container deployment working with no extra services.
+ */
+export async function initQueue(): Promise<'redis' | 'in-process'> {
+  if (!config.jobs.redisUrl) {
+    console.log('[queue] REDIS_URL is not set; running jobs in-process.');
+    backend = 'in-process';
+    return backend;
   }
 
+  try {
+    connection = new IORedis(config.jobs.redisUrl, {
+      maxRetriesPerRequest: null,
+      enableReadyCheck: true,
+      lazyConnect: true,
+      connectTimeout: 5_000,
+      retryStrategy: (attempt) => (attempt > 3 ? null : Math.min(attempt * 200, 1_000)),
+    });
+    connection.on('error', () => {
+      // Errors surface through the connect() rejection below; keep logs quiet.
+    });
+
+    await connection.connect();
+    await connection.ping();
+
+    queue = new Queue<JobPayload>(QUEUE_NAME, {
+      connection,
+      defaultJobOptions: {
+        attempts: 1,
+        removeOnComplete: 100,
+        removeOnFail: 100,
+      },
+    });
+
+    worker = new Worker<JobPayload>(
+      QUEUE_NAME,
+      async (job: Job<JobPayload>) => execute(job.data),
+      { connection, concurrency: 2 },
+    );
+
+    worker.on('failed', (job, error) => {
+      if (job?.data?.jobId) {
+        jobStore.update(job.data.jobId, { status: 'failed', error: toErrorMessage(error) });
+      }
+    });
+
+    backend = 'redis';
+    console.log(`[queue] connected to Redis at ${config.jobs.redisUrl}; using BullMQ.`);
+  } catch (error) {
+    console.warn(
+      `[queue] Redis unavailable (${toErrorMessage(error)}); running jobs in-process.`,
+    );
+    await connection?.quit().catch(() => undefined);
+    connection = null;
+    queue = null;
+    backend = 'in-process';
+  }
+
+  return backend;
+}
+
+async function dispatch(payload: JobPayload): Promise<void> {
+  if (queue) {
+    try {
+      await queue.add(payload.kind, payload, { jobId: payload.jobId });
+      return;
+    } catch (error) {
+      console.warn(`[queue] enqueue failed (${toErrorMessage(error)}); running in-process.`);
+    }
+  }
+
+  void execute(payload).catch((error) => {
+    jobStore.update(payload.jobId, { status: 'failed', error: toErrorMessage(error) });
+  });
+}
+
+export async function createCrawlJob(request: CrawlRequest): Promise<string> {
+  const jobId = randomUUID();
+  jobStore.create(jobId, 'crawl', request, 1);
+  await dispatch({ kind: 'crawl', jobId, request });
   return jobId;
 }
 
-export function getCrawlJob(jobId: string): CrawlJob | undefined {
-  return jobsStore.get(jobId);
+export async function createBatchScrapeJob(request: BatchScrapeRequest): Promise<string> {
+  const jobId = randomUUID();
+  jobStore.create(jobId, 'batch_scrape', request, request.urls.length);
+  await dispatch({ kind: 'batch_scrape', jobId, request });
+  return jobId;
 }
 
-export function cancelCrawlJob(jobId: string): boolean {
-  const job = jobsStore.get(jobId);
-  if (!job || ['completed', 'failed', 'cancelled'].includes(job.status)) return false;
-  job.status = 'cancelled';
-  return true;
+export function getJob(jobId: string): JobRecord | null {
+  return jobStore.get(jobId);
 }
 
-async function processCrawl(jobId: string, request: CrawlRequest) {
-  const job = jobsStore.get(jobId);
-  if (!job) return;
-  const results: ScrapeResponse[] = [];
+export function getJobDocuments(
+  jobId: string,
+  options: { offset?: number; limit?: number } = {},
+): Document[] {
+  return jobStore.listDocuments(jobId, options);
+}
 
-  try {
-    job.status = 'running';
-    await assertSafeUrl(request.url);
-    const visited = new Set<string>();
-    const queue = [{ url: normalizeUrl(request.url), depth: 0 }];
+export function countJobDocuments(jobId: string): number {
+  return jobStore.countDocuments(jobId);
+}
 
-    const baseUrl = new URL(request.url);
-
-    while (queue.length > 0 && results.length < request.limit) {
-    if (jobsStore.get(jobId)?.status === 'cancelled') return;
-    const current = queue.shift()!;
-    if (visited.has(current.url)) continue;
-    visited.add(current.url);
-
-    const userFormats = request.scrape_options?.formats || ['markdown'];
-    const formatsWithHtml = userFormats.includes('html')
-      ? userFormats
-      : [...userFormats, 'html' as const];
-    const scrapeResult = await scrapeUrl({
-      url: current.url,
-      formats: formatsWithHtml,
-      ai_provider: request.scrape_options?.ai_provider || 'gemini',
-      extract: request.scrape_options?.extract,
-    });
-
-    if (scrapeResult.success) {
-      results.push(scrapeResult);
-      job.results = [...results];
-      job.progress = Math.round((results.length / (request.limit || 10)) * 100);
-      
-      // Extract links for next depth
-      if (current.depth < request.max_depth) {
-        const $ = cheerio.load(scrapeResult.data.html || '');
-        $('a').each((_, el) => {
-          const href = $(el).attr('href');
-          if (href) {
-            try {
-              const absoluteUrl = normalizeUrl(new URL(href, current.url).toString());
-              if (isAllowedLink(absoluteUrl, baseUrl, request.allow_external) && !visited.has(absoluteUrl)) {
-                queue.push({ url: absoluteUrl, depth: current.depth + 1 });
-              }
-            } catch {}
-          }
-        });
-      }
-    }
-    }
-
-    job.status = 'completed';
-    job.progress = 100;
-    job.total_pages = results.length;
-  } catch (error: any) {
-    job.status = 'failed';
-    job.error = error.message;
-    job.total_pages = results.length;
+export async function cancelJob(jobId: string): Promise<boolean> {
+  const cancelled = jobStore.cancel(jobId);
+  if (cancelled && queue) {
+    await queue.remove(jobId).catch(() => undefined);
   }
+  return cancelled;
+}
+
+export function queueBackend(): 'redis' | 'in-process' {
+  return backend;
+}
+
+export async function shutdownQueue(): Promise<void> {
+  await worker?.close().catch(() => undefined);
+  await queue?.close().catch(() => undefined);
+  await connection?.quit().catch(() => undefined);
+  worker = null;
+  queue = null;
+  connection = null;
 }

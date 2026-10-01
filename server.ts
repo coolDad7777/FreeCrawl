@@ -1,49 +1,58 @@
-import express from 'express';
-import cors from 'cors';
-import morgan from 'morgan';
-import path from 'path';
-import { createServer as createViteServer } from 'vite';
+import { config } from './src/config';
+import { attachErrorHandlers, attachFrontend, createApp } from './src/api/app';
+import { browserManager } from './src/core/browser';
+import { scrapeCache } from './src/core/cache';
+import { jobStore } from './src/queue/store';
+import { initQueue, shutdownQueue } from './src/queue/worker';
 
-import scrapeRouter from './src/api/routes/scrape';
-import crawlRouter from './src/api/routes/crawl';
-import mapRouter from './src/api/routes/map';
-import searchRouter from './src/api/routes/search';
+async function main(): Promise<void> {
+  // Jobs left mid-flight by an unclean shutdown can never resume; surface them
+  // as failed instead of leaving clients polling forever.
+  const interrupted = jobStore.failInterrupted();
+  if (interrupted > 0) console.log(`[jobs] marked ${interrupted} interrupted job(s) as failed.`);
+  jobStore.prune();
+  scrapeCache.prune();
 
-async function startServer() {
-  const app = express();
-  const PORT = 3000;
+  await initQueue();
 
-  app.use(cors());
-  app.use(morgan('dev'));
-  app.use(express.json({ limit: '10mb' }));
+  const app = createApp();
+  await attachFrontend(app);
+  attachErrorHandlers(app);
 
-  // API Routes
-  app.use('/v1/scrape', scrapeRouter);
-  app.use('/v1/crawl', crawlRouter);
-  app.use('/v1/map', mapRouter);
-  app.use('/v1/search', searchRouter);
+  const server = app.listen(config.port, '0.0.0.0', () => {
+    console.log(`FreeCrawl listening on http://0.0.0.0:${config.port}`);
+    console.log(`  API      POST /v1/scrape | /v1/crawl | /v1/map | /v1/search | /v1/extract`);
+    console.log(`  Auth     ${config.apiKeys.length > 0 ? 'API key required' : 'open (set FREECRAWL_API_KEY to lock down)'}`);
+  });
 
-  // Health check
-  app.get('/health', (req, res) => res.json({ status: 'ok' }));
+  const maintenance = setInterval(() => {
+    jobStore.prune();
+    scrapeCache.prune();
+  }, 15 * 60_000);
+  maintenance.unref();
 
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
-  }
+  let shuttingDown = false;
+  const shutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`\n[shutdown] received ${signal}; closing down.`);
+    clearInterval(maintenance);
+    server.close();
+    await shutdownQueue();
+    await browserManager.close();
+    scrapeCache.close();
+    jobStore.close();
+    process.exit(0);
+  };
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`FreeCrawl API running on http://localhost:${PORT}`);
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('unhandledRejection', (reason) => {
+    console.error('[unhandledRejection]', reason);
   });
 }
 
-startServer().catch(console.error);
+main().catch((error) => {
+  console.error('Failed to start FreeCrawl:', error);
+  process.exit(1);
+});
