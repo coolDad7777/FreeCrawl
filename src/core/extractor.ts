@@ -19,7 +19,7 @@ const BOILERPLATE_SELECTORS = [
 ];
 
 const BOILERPLATE_PATTERN =
-  /(^|[-_\s])(ad|ads|advert|advertisement|banner|breadcrumb|comment|cookie|consent|gdpr|disqus|footer|header|masthead|menu|modal|nav|navbar|newsletter|offcanvas|pagination|paywall|popup|promo|related|share|sharing|sidebar|signup|social|sponsor|subscribe|toolbar|tooltip|widget)([-_\s]|$)/i;
+  /(^|[-_\s])(ad|ads|advert|advertisement|banner|breadcrumb|comment|cookie|consent|gdpr|disqus|editsection|footer|header|masthead|menu|modal|nav|navbar|newsletter|noprint|offcanvas|pagination|paywall|popup|promo|related|share|sharing|sidebar|signup|skiplink|social|sponsor|sr-only|screen-reader|subscribe|toolbar|tooltip|visually-hidden|widget)([-_\s]|$)/i;
 
 /** Containers that reliably hold the main article when present. */
 const MAIN_CONTENT_SELECTORS = [
@@ -281,7 +281,7 @@ export function extractPage(rawHtml: string, options: ExtractOptions): Extracted
     const main = selectMainContent($);
     if (main && main.length > 0) {
       const mainTextLength = Math.max(textOf($, main[0]).length, 1);
-      noise.each((_, element) => {
+      const prune = (element: AnyNode): void => {
         const node = $(element);
         // Never remove the chosen article or anything that contains it.
         if (node.is(main as never) || node.find(main.toArray() as never).length > 0) return;
@@ -290,6 +290,12 @@ export function extractPage(rawHtml: string, options: ExtractOptions): Extracted
         // when it is small enough that it cannot be the content itself.
         const inside = main.find(element as never).length > 0;
         if (!inside || textOf($, element).length / mainTextLength < 0.3) node.remove();
+      };
+      noise.each((_, element) => prune(element));
+      // Per-section furniture such as "edit" links and share buttons sits inside
+      // the article itself, so it survives the structural pass above.
+      main.find('*').each((_, element) => {
+        if (BOILERPLATE_PATTERN.test(attrSignature($, element))) prune(element);
       });
       root = main;
     } else {
@@ -301,7 +307,10 @@ export function extractPage(rawHtml: string, options: ExtractOptions): Extracted
   }
 
   let html = (root.html() ?? '').trim();
-  if (documentHeading && !/<h1[\s>]/i.test(html)) {
+  // Re-parse rather than pattern-match: pages routinely stash serialized markup
+  // inside attribute values, which a regex would mistake for a real heading.
+  const content = cheerio.load(html, null, false);
+  if (documentHeading && content('h1').length === 0) {
     html = `<h1>${documentHeading.replace(/</g, '&lt;')}</h1>\n${html}`;
   }
 

@@ -39,7 +39,7 @@ md = d.get('markdown', '')
 print(f"  engine={d['metadata']['engine']}  status={d['metadata']['statusCode']}  "
       f"{d['metadata']['scrapeDurationMs']}ms  markdown={len(md)} chars  links={len(d.get('links', []))}")
 print(f"  title={d['metadata']['title']!r}")
-noise = [n for n in ('Jump to content', 'Donate now', 'Privacy policy', 'Create account') if n in md]
+noise = [n for n in ('Jump to content', 'Donate now', 'Privacy policy', 'Create account', '[edit]') if n in md]
 print(f"  boilerplate leaked: {noise or 'none'}")
 print('  --- first 320 chars of markdown ---')
 print('  ' + md[:320].replace('\n', '\n  '))
@@ -167,6 +167,30 @@ check "non-http scheme is refused"  "$(post /v1/scrape '{"url":"file:///etc/pass
 check "unknown job is a 404"        "$(curl -sS "$BASE/v1/crawl/00000000-0000-4000-8000-000000000000")" 'not_found'
 check "unknown route is a 404"      "$(post /v1/nope '{}')"                                    'not_found'
 check "extract without a key is 501" "$(post /v1/extract '{"url":"https://example.com","prompt":"x"}')" 'not_configured'
+
+echo; echo "14. Markdown is markdown — table-heavy pages must not leak raw HTML"
+for URL in \
+  "https://en.wikipedia.org/wiki/Comparison_of_web_browsers" \
+  "https://news.ycombinator.com" \
+  "https://en.wikipedia.org/wiki/List_of_HTTP_status_codes"; do
+  post /v1/scrape "{\"url\":\"$URL\",\"formats\":[\"markdown\"],\"skipCache\":true}" > /tmp/freecrawl-md.json
+  python3 - "$URL" /tmp/freecrawl-md.json <<'PY'
+import json, re, sys
+md = json.load(open(sys.argv[2]))['data'].get('markdown', '')
+# Block-level tags have a markdown equivalent, so any that survive are a bug.
+leaked = re.findall(r'</?(table|tbody|thead|tr|td|th|div|span|ul|ol|li|p)[\s/>]', md)
+# A table row split across lines leaves a bare pipe behind.
+torn = len(re.findall(r'^\s*\|\s*$', md, re.M))
+print(f"  {sys.argv[1][:58]:58s} {len(md):7d} chars  raw_tags={len(leaked)}  torn_rows={torn}")
+sys.exit(0 if not leaked and torn == 0 else 1)
+PY
+  # shellcheck disable=SC2181
+  if [ $? -eq 0 ]; then
+    echo "  PASS  clean markdown"; PASS=$((PASS + 1))
+  else
+    echo "  FAIL  raw HTML or torn table rows in markdown"; FAIL=$((FAIL + 1))
+  fi
+done
 
 hr; printf 'passed %d, failed %d\nfinished %s\n' "$PASS" "$FAIL" "$(date -u +%FT%TZ)"; hr
 exit $((FAIL > 0))
