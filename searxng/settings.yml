@@ -1,0 +1,18 @@
+# Minimal SearXNG config for FreeCrawl's /v1/search endpoint.
+# `use_default_settings` inherits everything else from the upstream defaults.
+use_default_settings: true
+
+server:
+  # Change this before exposing SearXNG outside your own network.
+  secret_key: 'change-me-freecrawl'
+  # FreeCrawl is the only client, so the bot limiter would only get in the way.
+  limiter: false
+  image_proxy: false
+
+search:
+  # The JSON format is disabled by default; FreeCrawl reads results through it.
+  formats:
+    - html
+    - json
+  safe_search: 0
+  autocomplete: ''

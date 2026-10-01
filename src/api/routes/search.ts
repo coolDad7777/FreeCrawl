@@ -1,46 +1,73 @@
-import express, { Request, Response } from 'express';
-import axios from 'axios';
-import { SearchRequestSchema } from '../../types';
-import { scrapeUrl } from '../../core/scraper';
+import express, { type Request, type Response } from 'express';
+import { toErrorMessage } from '../../core/errors';
+import { scrapeDocument } from '../../core/scraper';
+import { searchWeb } from '../../core/search';
+import { isSafeUrl } from '../../core/url';
+import { SearchRequestSchema, type SearchResult } from '../../types';
+import { asyncHandler } from '../middleware';
 
 const router = express.Router();
 
-router.post('/', async (req: Request, res: Response) => {
-  try {
-    const { query, limit, scrape_results } = SearchRequestSchema.parse(req.body);
-    
-    // Using DuckDuckGo HTML search as a free alternative
-    const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-    const response = await axios.get(searchUrl, { timeout: 15000, maxContentLength: 5 * 1024 * 1024 });
-    const results: any[] = [];
-    
-    // Simple parsing (could be improved with cheerio)
-    const links = response.data.match(/class="result__a" href="([^"]+)"/g) || [];
-    
-    for (let i = 0; i < Math.min(links.length, limit || 5); i++) {
-      const match = links[i].match(/href="([^"]+)"/);
-      if (match) {
-        const url = decodeURIComponent(match[1].replace('/l/?kh=-1&amp;uddg=', ''));
-        results.push({ url });
-      }
+router.post(
+  '/',
+  asyncHandler(async (req: Request, res: Response) => {
+    const request = SearchRequestSchema.parse(req.body ?? {});
+
+    const { results, engine, attempts } = await searchWeb(
+      {
+        query: request.query,
+        limit: request.limit,
+        lang: request.lang,
+        country: request.country,
+      },
+      request.engine,
+    );
+
+    const scrapeOptions =
+      request.scrapeOptions ?? (request.scrape_results ? { formats: ['markdown' as const] } : undefined);
+
+    if (!scrapeOptions) {
+      res.json({
+        success: true,
+        engine,
+        data: results satisfies SearchResult[],
+        ...(attempts.length > 0 ? { warning: `Fell back from: ${attempts.map((a) => a.engine).join(', ')}` } : {}),
+      });
+      return;
     }
 
-    if (scrape_results) {
-      const scrapedResults = await Promise.all(
-        results.map(r => scrapeUrl({ 
-          url: r.url, 
-          formats: ['markdown'],
-          ai_provider: 'gemini'
-        }))
-      );
-      return res.json({ success: true, data: scrapedResults });
-    }
+    const enriched = await Promise.all(
+      results.map(async (hit): Promise<SearchResult> => {
+        if (!(await isSafeUrl(hit.url))) {
+          return { ...hit, description: hit.description || 'Skipped: unsafe or unresolvable URL' };
+        }
+        try {
+          const document = await scrapeDocument(hit.url, scrapeOptions);
+          return {
+            ...hit,
+            title: hit.title || document.metadata.title,
+            description: hit.description || document.metadata.description,
+            markdown: document.markdown,
+            html: document.html,
+            rawHtml: document.rawHtml,
+            links: document.links,
+            screenshot: document.screenshot,
+            json: document.json,
+            metadata: document.metadata,
+          };
+        } catch (error) {
+          return { ...hit, metadata: undefined, description: hit.description, ...{ error: toErrorMessage(error) } };
+        }
+      }),
+    );
 
-    res.json({ success: true, data: results });
-  } catch (error: any) {
-    const status = error?.name === 'ZodError' ? 400 : 502;
-    res.status(status).json({ success: false, error: error.message });
-  }
-});
+    res.json({
+      success: true,
+      engine,
+      data: enriched,
+      ...(attempts.length > 0 ? { warning: `Fell back from: ${attempts.map((a) => a.engine).join(', ')}` } : {}),
+    });
+  }),
+);
 
 export default router;

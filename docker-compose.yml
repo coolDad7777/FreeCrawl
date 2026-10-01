@@ -1,18 +1,49 @@
-version: '3.8'
-
 services:
   freecrawl:
     build: .
     ports:
-      - "3000:3000"
+      - '${PORT:-3000}:3000'
     environment:
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - GROQ_API_KEY=${GROQ_API_KEY}
-      - REDIS_URL=redis://redis:6379
+      NODE_ENV: production
+      PORT: 3000
+      FREECRAWL_API_KEY: ${FREECRAWL_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      REDIS_URL: redis://redis:6379
+      # The bundled SearXNG instance keeps /v1/search working without any API key.
+      SEARXNG_URL: http://searxng:8080
+      RATE_LIMIT_RPM: ${RATE_LIMIT_RPM:-60}
+      CACHE_TTL_HOURS: ${CACHE_TTL_HOURS:-24}
+      SCRAPE_CONCURRENCY: ${SCRAPE_CONCURRENCY:-4}
+    volumes:
+      # Keeps the job and cache databases across container restarts.
+      - freecrawl-data:/app/.freecrawl
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
 
   redis:
-    image: redis:alpine
-    ports:
-      - "6379:6379"
+    image: redis:7-alpine
+    command: redis-server --save 60 1 --appendonly no
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  searxng:
+    image: searxng/searxng:latest
+    environment:
+      SEARXNG_BASE_URL: http://searxng:8080/
+    volumes:
+      # searxng/settings.yml enables the JSON format that /v1/search reads.
+      - ./searxng:/etc/searxng:rw
+    restart: unless-stopped
+
+volumes:
+  freecrawl-data:
+  redis-data:
