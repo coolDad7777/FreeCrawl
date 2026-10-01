@@ -2,86 +2,648 @@ openapi: 3.0.3
 info:
   title: FreeCrawl API
   version: 1.0.0
-  description: Self-hosted web scraping, crawling, mapping, and search API.
+  license:
+    name: Apache-2.0
+  description: >
+    Self-hosted web scraping, crawling, mapping, search, and AI extraction.
+    Request and response shapes follow Firecrawl v1 so existing clients work with
+    minimal changes. The snake_case field names used by FreeCrawl before 1.0
+    (`max_depth`, `scrape_options`, `ai_provider`, `allow_external`, `extract`)
+    are still accepted as aliases.
+
+    Authentication is only enforced when the server sets `FREECRAWL_API_KEY`.
+
 servers:
   - url: http://localhost:3000
+    description: Local self-hosted instance
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Scraping
+  - name: Crawling
+  - name: Discovery
+  - name: Search
+  - name: Extraction
+  - name: Operations
+
 paths:
   /health:
     get:
+      tags: [Operations]
+      summary: Liveness and configuration snapshot
+      security: []
       responses:
         '200':
-          description: Service is available
+          description: Service state, queue backend, cache stats, and provider configuration
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  version: { type: string }
+                  uptimeSeconds: { type: integer }
+                  queue: { type: string, enum: [redis, in-process] }
+                  authRequired: { type: boolean }
+
+  /openapi.yaml:
+    get:
+      tags: [Operations]
+      summary: This document
+      security: []
+      responses:
+        '200':
+          description: The OpenAPI description
+          content:
+            application/yaml:
+              schema: { type: string }
+
   /v1/scrape:
     post:
-      summary: Scrape one public URL
+      tags: [Scraping]
+      summary: Scrape a single URL
+      description: >
+        Fetches one page and returns the requested formats. The `auto` engine
+        issues a plain HTTP request first and escalates to headless Chromium only
+        when the markup turns out to be an empty client-rendered shell.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ScrapeRequest'
+              allOf:
+                - type: object
+                  required: [url]
+                  properties:
+                    url: { type: string, format: uri, example: 'https://example.com' }
+                - $ref: '#/components/schemas/ScrapeOptions'
       responses:
-        '200': { description: Scrape result }
-        '400': { description: Invalid request }
-        '422': { description: Unsafe or unreachable URL }
-  /v1/crawl:
+        '200':
+          description: The scraped document
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data: { $ref: '#/components/schemas/Document' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/BlockedByRobots' }
+        '413': { $ref: '#/components/responses/TooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedContent' }
+        '422': { $ref: '#/components/responses/UnsafeUrl' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '502': { $ref: '#/components/responses/UpstreamFailure' }
+
+  /v1/batch/scrape:
     post:
-      summary: Start a bounded crawl
+      tags: [Scraping]
+      summary: Scrape many URLs as a background job
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CrawlRequest'
+              type: object
+              required: [urls]
+              properties:
+                urls:
+                  type: array
+                  minItems: 1
+                  maxItems: 1000
+                  items: { type: string, format: uri }
+                scrapeOptions: { $ref: '#/components/schemas/ScrapeOptions' }
       responses:
-        '200': { description: Job accepted }
-  /v1/crawl/{jobId}:
+        '200': { $ref: '#/components/responses/JobAccepted' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '422': { $ref: '#/components/responses/UnsafeUrl' }
+
+  /v1/batch/scrape/{jobId}:
     get:
-      summary: Get crawl status
+      tags: [Scraping]
+      summary: Read batch scrape status and results
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+        - $ref: '#/components/parameters/Skip'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200': { $ref: '#/components/responses/JobStatus' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Scraping]
+      summary: Cancel a batch scrape
       parameters:
         - $ref: '#/components/parameters/JobId'
       responses:
-        '200': { description: Crawl job }
-        '404': { description: Job not found }
+        '200': { $ref: '#/components/responses/Cancelled' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/JobNotActive' }
+
+  /v1/batch/scrape/{jobId}/errors:
+    get:
+      tags: [Scraping]
+      summary: List per-URL failures for a batch scrape
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200': { $ref: '#/components/responses/JobErrors' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/crawl:
+    post:
+      tags: [Crawling]
+      summary: Start a crawl
+      description: >
+        Seeds the frontier with the start URL and the site's sitemap, then follows
+        same-site links breadth-first up to `maxDepth` and `limit`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string, format: uri }
+                maxDepth:
+                  type: integer
+                  minimum: 0
+                  default: 2
+                  description: 0 scrapes only the start URL.
+                limit: { type: integer, minimum: 1, default: 10 }
+                includePaths:
+                  type: array
+                  items: { type: string }
+                  description: 'Glob-ish path filters. `/docs/*` matches one segment, `/docs/**` any depth.'
+                excludePaths:
+                  type: array
+                  items: { type: string }
+                  description: Applied before includePaths.
+                crawlEntireDomain:
+                  type: boolean
+                  default: true
+                  description: When false, stays at or below the start URL's directory.
+                allowExternalLinks: { type: boolean, default: false }
+                includeSubdomains: { type: boolean, default: false }
+                ignoreSitemap: { type: boolean, default: false }
+                deduplicateSimilarURLs: { type: boolean, default: true }
+                maxConcurrency: { type: integer, minimum: 1, maximum: 32 }
+                scrapeOptions: { $ref: '#/components/schemas/ScrapeOptions' }
+      responses:
+        '200': { $ref: '#/components/responses/JobAccepted' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '422': { $ref: '#/components/responses/UnsafeUrl' }
+
+  /v1/crawl/{jobId}:
+    get:
+      tags: [Crawling]
+      summary: Read crawl status and results
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+        - $ref: '#/components/parameters/Skip'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200': { $ref: '#/components/responses/JobStatus' }
+        '404': { $ref: '#/components/responses/NotFound' }
     delete:
+      tags: [Crawling]
       summary: Cancel a crawl
       parameters:
         - $ref: '#/components/parameters/JobId'
       responses:
-        '200': { description: Crawl cancelled }
-        '404': { description: Active job not found }
+        '200': { $ref: '#/components/responses/Cancelled' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/JobNotActive' }
+
+  /v1/crawl/{jobId}/errors:
+    get:
+      tags: [Crawling]
+      summary: List per-URL failures for a crawl
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200': { $ref: '#/components/responses/JobErrors' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /v1/map:
     post:
-      summary: Map same-host links
+      tags: [Discovery]
+      summary: List every URL on a site
+      description: Merges the sitemap with the links found on the given page. Returns quickly; does not scrape each URL.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string, format: uri }
+                search:
+                  type: string
+                  description: Keeps and ranks only URLs containing this term.
+                limit: { type: integer, minimum: 1, maximum: 30000, default: 100 }
+                ignoreSitemap: { type: boolean, default: false }
+                includeSubdomains: { type: boolean, default: false }
+                sitemapOnly: { type: boolean, default: false }
       responses:
-        '200': { description: URL list }
+        '200':
+          description: The discovered URLs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  links:
+                    type: array
+                    items: { type: string, format: uri }
+                  sources:
+                    type: object
+                    properties:
+                      sitemap: { type: integer }
+                      page: { type: integer }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '422': { $ref: '#/components/responses/UnsafeUrl' }
+
   /v1/search:
     post:
-      summary: Search the web
+      tags: [Search]
+      summary: Search the web, optionally scraping each result
+      description: >
+        Engines are tried in the order configured by `SEARCH_ENGINES` until one
+        returns results. SearXNG is the most reliable option because DuckDuckGo
+        and Bing rate-limit datacenter IP ranges.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query: { type: string, maxLength: 500 }
+                limit: { type: integer, minimum: 1, maximum: 50, default: 5 }
+                lang: { type: string, default: en }
+                country: { type: string, default: us }
+                engine:
+                  type: string
+                  enum: [auto, searxng, duckduckgo, bing]
+                  default: auto
+                scrapeOptions: { $ref: '#/components/schemas/ScrapeOptions' }
       responses:
-        '200': { description: Search results }
+        '200':
+          description: Search results, enriched with page content when scrapeOptions is set
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  engine: { type: string }
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        url: { type: string, format: uri }
+                        title: { type: string }
+                        description: { type: string }
+                        markdown: { type: string }
+                        metadata: { $ref: '#/components/schemas/PageMetadata' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '501': { $ref: '#/components/responses/NotConfigured' }
+        '502': { $ref: '#/components/responses/UpstreamFailure' }
+
+  /v1/extract:
+    post:
+      tags: [Extraction]
+      summary: Extract structured JSON from one or more pages
+      description: Scrapes each URL, concatenates the Markdown, and asks the configured LLM for one merged JSON object.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                urls:
+                  type: array
+                  minItems: 1
+                  maxItems: 20
+                  items: { type: string, format: uri }
+                url:
+                  type: string
+                  format: uri
+                  description: Convenience alternative to a single-element `urls`.
+                prompt: { type: string }
+                systemPrompt: { type: string }
+                schema:
+                  type: object
+                  description: A JSON Schema, or a flat map of field name to description.
+                aiProvider: { type: string, enum: [gemini, groq] }
+                scrapeOptions: { $ref: '#/components/schemas/ScrapeOptions' }
+      responses:
+        '200':
+          description: The extracted object plus the status of each source page
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data: { type: object }
+                  provider: { type: string }
+                  sources:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        url: { type: string }
+                        status: { type: string, enum: [ok, failed] }
+                        title: { type: string }
+                        error: { type: string }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '422': { $ref: '#/components/responses/UnsafeUrl' }
+        '501': { $ref: '#/components/responses/NotConfigured' }
+        '502': { $ref: '#/components/responses/UpstreamFailure' }
+
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Required only when the server sets `FREECRAWL_API_KEY`.
+
   parameters:
     JobId:
       name: jobId
       in: path
       required: true
       schema: { type: string, format: uuid }
+    Skip:
+      name: skip
+      in: query
+      schema: { type: integer, minimum: 0, default: 0 }
+      description: Number of documents to skip. Use the `next` URL to page.
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+
   schemas:
-    ScrapeRequest:
+    ScrapeOptions:
       type: object
-      required: [url]
       properties:
-        url: { type: string, format: uri }
         formats:
           type: array
-          items: { type: string, enum: [markdown, html, screenshot] }
-        extract: { type: object }
-    CrawlRequest:
+          default: [markdown]
+          items:
+            type: string
+            enum: [markdown, html, rawHtml, links, screenshot, 'screenshot@fullPage', json]
+        engine:
+          type: string
+          enum: [auto, fetch, browser]
+          default: auto
+        onlyMainContent:
+          type: boolean
+          default: true
+          description: Strips navigation, headers, footers, sidebars, and cookie banners.
+        includeTags:
+          type: array
+          items: { type: string }
+          description: CSS selectors; when set, only these subtrees are kept.
+        excludeTags:
+          type: array
+          items: { type: string }
+          description: CSS selectors removed before conversion.
+        headers:
+          type: object
+          additionalProperties: { type: string }
+        waitFor:
+          type: integer
+          minimum: 0
+          maximum: 30000
+          default: 0
+          description: Extra delay after load. Forces the browser engine.
+        mobile: { type: boolean, default: false }
+        timeout: { type: integer, minimum: 1000, maximum: 300000, default: 30000 }
+        removeBase64Images: { type: boolean, default: true }
+        respectRobotsTxt: { type: boolean, default: true }
+        maxAge:
+          type: integer
+          description: Serve a cached result when it is younger than this many milliseconds.
+        skipCache: { type: boolean, default: false }
+        aiProvider: { type: string, enum: [gemini, groq] }
+        jsonOptions:
+          type: object
+          description: Used by the `json` format.
+          properties:
+            schema:
+              type: object
+              description: A JSON Schema, or a flat map of field name to description.
+            prompt: { type: string }
+            systemPrompt: { type: string }
+        actions:
+          type: array
+          maxItems: 25
+          description: Browser interactions performed before the page is read. Forces the browser engine.
+          items:
+            oneOf:
+              - type: object
+                required: [type]
+                properties:
+                  type: { type: string, enum: [wait] }
+                  milliseconds: { type: integer, minimum: 0, maximum: 30000 }
+                  selector: { type: string }
+              - type: object
+                required: [type, selector]
+                properties:
+                  type: { type: string, enum: [click] }
+                  selector: { type: string }
+              - type: object
+                required: [type, text]
+                properties:
+                  type: { type: string, enum: [write] }
+                  selector: { type: string }
+                  text: { type: string }
+              - type: object
+                required: [type, key]
+                properties:
+                  type: { type: string, enum: [press] }
+                  key: { type: string }
+              - type: object
+                required: [type]
+                properties:
+                  type: { type: string, enum: [scroll] }
+                  direction: { type: string, enum: [up, down] }
+                  amount: { type: integer, minimum: 1, maximum: 50 }
+              - type: object
+                required: [type]
+                properties:
+                  type: { type: string, enum: [screenshot] }
+                  fullPage: { type: boolean }
+              - type: object
+                required: [type]
+                properties:
+                  type: { type: string, enum: [scrape] }
+
+    PageMetadata:
       type: object
-      required: [url]
       properties:
-        url: { type: string, format: uri }
-        max_depth: { type: integer, minimum: 1, maximum: 5, default: 2 }
-        limit: { type: integer, minimum: 1, maximum: 100, default: 10 }
-        allow_external: { type: boolean, default: false }
+        title: { type: string }
+        description: { type: string }
+        language: { type: string }
+        sourceURL: { type: string, format: uri, description: The URL after redirects. }
+        statusCode: { type: integer }
+        contentType: { type: string }
+        canonical: { type: string }
+        keywords: { type: string }
+        author: { type: string }
+        publishedTime: { type: string }
+        ogTitle: { type: string }
+        ogDescription: { type: string }
+        ogImage: { type: string }
+        ogSiteName: { type: string }
+        favicon: { type: string }
+        scrapeDurationMs: { type: integer }
+        engine: { type: string, enum: [fetch, browser, cache] }
+
+    Document:
+      type: object
+      properties:
+        markdown: { type: string }
+        html: { type: string, description: Cleaned HTML, matching the markdown output. }
+        rawHtml: { type: string, description: The unmodified response body. }
+        links:
+          type: array
+          items: { type: string, format: uri }
+        screenshot: { type: string, description: Base64 PNG. }
+        json: { type: object, description: Result of the `json` format. }
+        extract: { type: object, description: Deprecated alias of `json`. }
+        metadata: { $ref: '#/components/schemas/PageMetadata' }
+        warning: { type: string }
+
+    Error:
+      type: object
+      properties:
+        success: { type: boolean, example: false }
+        error: { type: string }
+        code: { type: string }
+        details: {}
+
+  responses:
+    JobAccepted:
+      description: The job was accepted
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              success: { type: boolean }
+              id: { type: string, format: uuid }
+              url: { type: string, format: uri, description: Where to poll for status. }
+    JobStatus:
+      description: Job progress and the current page of results
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              success: { type: boolean }
+              id: { type: string }
+              status: { type: string, enum: [pending, scraping, completed, failed, cancelled] }
+              total: { type: integer }
+              completed: { type: integer }
+              creditsUsed: { type: integer }
+              progress: { type: integer }
+              createdAt: { type: string, format: date-time }
+              expiresAt: { type: string, format: date-time }
+              next: { type: string, format: uri, description: Absent on the last page. }
+              errorCount: { type: integer }
+              data:
+                type: array
+                items: { $ref: '#/components/schemas/Document' }
+    JobErrors:
+      description: Per-URL failures
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              success: { type: boolean }
+              errors:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    url: { type: string }
+                    error: { type: string }
+                    timestamp: { type: string, format: date-time }
+    Cancelled:
+      description: The job was cancelled
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              success: { type: boolean }
+              status: { type: string, example: cancelled }
+    InvalidRequest:
+      description: The request body failed validation
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Missing or invalid API key
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    BlockedByRobots:
+      description: robots.txt disallows the URL
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: No such job or route
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    JobNotActive:
+      description: The job already finished
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    TooLarge:
+      description: The response exceeds SCRAPE_MAX_BYTES
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    UnsupportedContent:
+      description: The URL does not serve text or HTML
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    UnsafeUrl:
+      description: The URL is private, local, credential-bearing, or unresolvable
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    RateLimited:
+      description: RATE_LIMIT_RPM exceeded
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotConfigured:
+      description: A required API key or search engine is not configured
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    UpstreamFailure:
+      description: The target site or search engine could not be reached
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
