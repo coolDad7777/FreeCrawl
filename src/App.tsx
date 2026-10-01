@@ -13,7 +13,7 @@ export default function App() {
       const response = await fetch('/v1/scrape', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, formats: ['markdown'] }),
+        body: JSON.stringify({ url, formats: ['markdown'], ai_provider: 'local' }),
       });
       const data = await response.json();
       setResult(data);
@@ -62,7 +62,7 @@ export default function App() {
             transition={{ delay: 0.1 }}
             className="text-lg text-neutral-400 max-w-2xl mx-auto mb-10"
           >
-            FreeCrawl is a self-hosted, free alternative to Firecrawl. Scrape, crawl, and extract structured data using Gemini 2.5 Flash and other free AI providers.
+            FreeCrawl is a self-hosted, free alternative to Firecrawl. Scrape, crawl, search, and extract structured data with a local no-key fallback or optional free-tier AI providers.
           </motion.p>
 
           {/* Quick Scrape Tool */}
@@ -144,7 +144,7 @@ export default function App() {
           <FeatureCard 
             icon={<Code className="w-6 h-6 text-emerald-400" />}
             title="AI Extraction"
-            description="Use Gemini 2.5 Flash to extract structured JSON from unstructured web content with custom schemas."
+            description="Extract structured JSON from web content with the local fallback, Gemini, or Groq using custom schemas."
           />
           <FeatureCard 
             icon={<Search className="w-6 h-6 text-orange-400" />}
@@ -189,7 +189,7 @@ export default function App() {
                 &nbsp;&nbsp;-d <span className="text-emerald-400">{"'{"}</span> \<br />
                 &nbsp;&nbsp;&nbsp;&nbsp;<span className="text-emerald-400">{"\"url\": \"https://example.com\","}</span> \<br />
                 &nbsp;&nbsp;&nbsp;&nbsp;<span className="text-emerald-400">{"\"formats\": [\"markdown\"],"}</span> \<br />
-                &nbsp;&nbsp;&nbsp;&nbsp;<span className="text-emerald-400">{"\"ai_provider\": \"gemini\""}</span> \<br />
+                &nbsp;&nbsp;&nbsp;&nbsp;<span className="text-emerald-400">{"\"ai_provider\": \"local\""}</span> \<br />
                 &nbsp;&nbsp;<span className="text-emerald-400">{"'}"}</span>
               </div>
             </div>

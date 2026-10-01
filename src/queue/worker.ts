@@ -4,7 +4,6 @@ import { v4 as uuidv4 } from 'uuid';
 import { CrawlRequest, CrawlJob, ScrapeResponse } from '../types';
 import { scrapeUrl } from '../core/scraper';
 import * as cheerio from 'cheerio';
-import axios from 'axios';
 import { assertSafeUrl, isAllowedLink, normalizeUrl } from '../core/url';
 
 const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
@@ -35,6 +34,12 @@ let crawlQueue: Queue | null = null;
 let isRedisAvailable = false;
 
 async function initQueue() {
+  if (process.env.FREECRAWL_DISABLE_REDIS === 'true') {
+    isRedisAvailable = false;
+    console.warn("Redis disabled. Using in-memory fallback for crawl jobs.");
+    return;
+  }
+
   try {
     await redisConnection.connect();
     isRedisAvailable = true;
@@ -107,7 +112,9 @@ async function processCrawl(jobId: string, request: CrawlRequest) {
     job.status = 'running';
     await assertSafeUrl(request.url);
     const visited = new Set<string>();
+    const queued = new Set<string>();
     const queue = [{ url: normalizeUrl(request.url), depth: 0 }];
+    queued.add(queue[0].url);
 
     const baseUrl = new URL(request.url);
 
@@ -124,25 +131,34 @@ async function processCrawl(jobId: string, request: CrawlRequest) {
     const scrapeResult = await scrapeUrl({
       url: current.url,
       formats: formatsWithHtml,
-      ai_provider: request.scrape_options?.ai_provider || 'gemini',
+      ai_provider: request.scrape_options?.ai_provider || 'local',
       extract: request.scrape_options?.extract,
     });
 
     if (scrapeResult.success) {
+      const htmlForLinks = scrapeResult.data.html || '';
+      if (!userFormats.includes('html')) {
+        delete scrapeResult.data.html;
+      }
       results.push(scrapeResult);
       job.results = [...results];
       job.progress = Math.round((results.length / (request.limit || 10)) * 100);
       
       // Extract links for next depth
       if (current.depth < request.max_depth) {
-        const $ = cheerio.load(scrapeResult.data.html || '');
+        const $ = cheerio.load(htmlForLinks);
         $('a').each((_, el) => {
           const href = $(el).attr('href');
           if (href) {
             try {
               const absoluteUrl = normalizeUrl(new URL(href, current.url).toString());
-              if (isAllowedLink(absoluteUrl, baseUrl, request.allow_external) && !visited.has(absoluteUrl)) {
+              if (
+                isAllowedLink(absoluteUrl, baseUrl, request.allow_external) &&
+                !visited.has(absoluteUrl) &&
+                !queued.has(absoluteUrl)
+              ) {
                 queue.push({ url: absoluteUrl, depth: current.depth + 1 });
+                queued.add(absoluteUrl);
               }
             } catch {}
           }
