@@ -3,6 +3,7 @@ import { browserManager } from './browser';
 import { htmlToMarkdown } from './converter';
 import { ScrapeRequest, ScrapeResponse } from '../types';
 import { getAIProvider } from '../ai';
+import { assertSafeUrl } from './url';
 
 export async function scrapeUrl(options: ScrapeRequest): Promise<ScrapeResponse> {
   const startTime = Date.now();
@@ -10,6 +11,14 @@ export async function scrapeUrl(options: ScrapeRequest): Promise<ScrapeResponse>
 
   try {
     page = await browserManager.newPage();
+    await page.route('**/*', async (route) => {
+      try {
+        await assertSafeUrl(route.request().url());
+        await route.continue();
+      } catch {
+        await route.abort('blockedbyclient');
+      }
+    });
     
     // Set a timeout for navigation
     const response = await page.goto(options.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
